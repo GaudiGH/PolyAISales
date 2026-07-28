@@ -1,0 +1,405 @@
+数据源表 ai_sales_data_sources
+
+CREATE TABLE ai_sales_data_sources (
+    id INT PRIMARY KEY AUTO_INCREMENT COMMENT '主键',
+    name VARCHAR(100) NOT NULL COMMENT '数据源名称',
+    code VARCHAR(50) UNIQUE NOT NULL COMMENT '唯一编码',
+    base_url VARCHAR(255) COMMENT '网站首页URL',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='数据源配置表';
+
+
+
+区域字典表 ai_sales_regions
+
+CREATE TABLE ai_sales_regions (
+    id INT PRIMARY KEY AUTO_INCREMENT COMMENT '主键',
+    name_zh VARCHAR(50) NOT NULL UNIQUE COMMENT '区域中文名',
+    name_en VARCHAR(50) COMMENT '区域英文名（预留）',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='香港行政区划表';
+
+
+楼盘主数据表 ai_sales_projects
+
+CREATE TABLE ai_sales_projects (
+    id INT PRIMARY KEY AUTO_INCREMENT COMMENT '主键',
+    name_zh VARCHAR(200) NOT NULL COMMENT '楼盘中文名称',
+    phase_zh VARCHAR(200) NOT NULL COMMENT '期数',
+    name_en VARCHAR(200) COMMENT '楼盘英文名称（预留）',
+	phase_en VARCHAR(200) NOT NULL COMMENT '期数',
+    region_id INT NOT NULL COMMENT '所在区域ID',
+    address VARCHAR(500) COMMENT '详细地址',
+    
+    -- 去化率核心字段
+    total_units INT COMMENT '总可售单元数（NULL则不计算该楼盘去化率）',
+    total_blocks SMALLINT COMMENT '座数/幢数',
+    
+    data_source_id INT NOT NULL COMMENT '数据来源ID',
+    external_id VARCHAR(100) COMMENT '外部楼盘ID',
+    source_url VARCHAR(500) COMMENT '详情页URL',
+    
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    
+    UNIQUE KEY uk_source_external (data_source_id, external_id),
+    INDEX idx_region (region_id),
+    FOREIGN KEY (region_id) REFERENCES ai_sales_regions(id),
+    FOREIGN KEY (data_source_id) REFERENCES ai_sales_data_sources(id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='楼盘主数据表';
+
+
+
+户型主数据表 ai_sales_unit_types（人工治理重点表）
+CREATE TABLE ai_sales_unit_types (
+    id INT PRIMARY KEY AUTO_INCREMENT COMMENT '主键',
+    project_id INT NOT NULL COMMENT '所属楼盘ID（不同楼盘户型不同）',
+    
+    -- 户型标识（人工精修的核心字段）
+    unit_name VARCHAR(100) NOT NULL COMMENT '标准化户型名称，如 2房2厅 / 开放式',
+    unit_code VARCHAR(50) COMMENT '楼盘内部编码，如 A型 / 01室',
+    
+    -- 结构化属性（便于指标计算，如户型热度排名 M015）
+    bedroom_count TINYINT COMMENT '卧室数量',
+    living_room_count TINYINT COMMENT '厅数量',
+    bathroom_count TINYINT COMMENT '卫生间数量',
+    is_studio TINYINT(1) DEFAULT 0 COMMENT '是否开放式单位',    
+    is_open_kitchen TINYINT(1) DEFAULT 0 COMMENT '是否开放式厨房（0=封闭式，1=开放式）',
+    balcony_count TINYINT DEFAULT 0 COMMENT '阳台数量',
+    terrace_area DECIMAL(10,2) COMMENT '露台面积（平方呎），NULL表示无露台或不适用',
+    is_duplex TINYINT(1) DEFAULT 0 COMMENT '是否复式单位（0=否，1=是）',
+    
+    -- 面积参考区间（辅助核对）
+    min_saleable_area DECIMAL(10,2) COMMENT '该户型最小实用面积（平方呎）',
+    max_saleable_area DECIMAL(10,2) COMMENT '该户型最大实用面积（平方呎）',
+    
+    -- 人工治理标记
+    is_manual_modified TINYINT(1) NOT NULL DEFAULT 0 COMMENT '是否人工修正过（1=是）',
+    modified_by_user_id INT NULL COMMENT '最后修改的管理员ID',
+    modified_at TIMESTAMP NULL COMMENT '最后人工修改时间',
+    
+    -- 来源溯源
+    data_source_id INT NOT NULL COMMENT '数据来源ID',
+    external_id VARCHAR(100) COMMENT '外部户型ID（如有）',
+    source_url VARCHAR(500) COMMENT '来源URL',
+    
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    
+    UNIQUE KEY uk_project_unit (project_id, unit_name),
+    INDEX idx_project (project_id),
+    INDEX idx_manual (is_manual_modified),
+    
+    FOREIGN KEY (project_id) REFERENCES ai_sales_projects(id) ON DELETE CASCADE,
+    FOREIGN KEY (data_source_id) REFERENCES ai_sales_data_sources(id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='户型主数据表（人工精修重点表）';
+
+
+
+销售安排/说明书主表 ai_sales_salesbrochures
+CREATE TABLE ai_sales_salesbrochures (
+    id INT PRIMARY KEY AUTO_INCREMENT COMMENT '主键',
+    
+    -- ===== 关联楼盘 =====
+    project_id INT NOT NULL COMMENT '所属楼盘ID',
+    
+    
+    -- ===== 销售时间安排 =====
+    launch_date DATE COMMENT '正式开售日期（可能待定）',
+    price_list_date DATE COMMENT '价单公布日期',
+    sales_arrangement_url VARCHAR(500) COMMENT '销售安排PDF/公告链接',
+    sales_arrangement_file VARCHAR(200) COMMENT '销售安排PDF文件名（本地存储）',
+    
+    -- ===== 该销售安排推出的单位统计 =====
+    offered_units INT COMMENT '该销售安排推出单位总数',
+    floor_range_summary VARCHAR(200) COMMENT '楼层范围摘要，如 "1/F-27/F"',
+    unit_type_summary VARCHAR(500) COMMENT '推出户型概况，如 "2房22伙，3房46伙"',
+    
+    -- ===== 状态 =====
+    status ENUM('draft','announced','selling','suspended','closed') DEFAULT 'announced' 
+        COMMENT '状态：草稿/已公布/售卖中/暂停/已结束',
+    
+    -- ===== 文件版本与修订 =====
+    issue_date DATE COMMENT '销售安排发出日期',
+    revision_dates VARCHAR(200) COMMENT '修订日期列表，如 "2025-04-25, 2025-06-13"',
+    is_latest_revision TINYINT(1) DEFAULT 1 COMMENT '是否最新修订版本',
+    
+    -- ===== 来源溯源 =====
+    data_source_id INT NOT NULL COMMENT '数据来源ID',
+    external_id VARCHAR(100) COMMENT '外部系统文件ID',
+    source_url VARCHAR(500) COMMENT '来源URL',
+    raw_data JSON COMMENT '抓取的原始数据备份',
+    
+    -- ===== 人工治理标记 =====
+    is_manual_modified TINYINT(1) NOT NULL DEFAULT 0 COMMENT '是否人工修正过',
+    modified_by_user_id INT NULL COMMENT '最后修改的管理员ID',
+    modified_at TIMESTAMP NULL COMMENT '最后人工修改时间',
+    
+    -- ===== 归档 =====
+    is_archived TINYINT(1) NOT NULL DEFAULT 0 COMMENT '逻辑归档',
+    
+    -- ===== 时间戳 =====
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+    
+    -- ===== 索引与约束 =====
+    INDEX idx_project (project_id),
+    INDEX idx_launch_date (launch_date),
+    INDEX idx_status (status),
+    INDEX idx_is_latest (is_latest_revision),
+    
+    FOREIGN KEY (project_id) REFERENCES ai_sales_projects(id) ON DELETE CASCADE,
+    FOREIGN KEY (data_source_id) REFERENCES ai_sales_data_sources(id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='销售安排/说明书表（开发商分阶段推售的销售文件）';
+
+
+
+销售记录表 ai_sales_transactions（关联户型ID + 保留原始文本）
+CREATE TABLE ai_sales_transactions (
+    id INT PRIMARY KEY AUTO_INCREMENT COMMENT '主键',
+    
+    -- ===== 关联维度（四层关联） =====
+    project_id INT NOT NULL COMMENT '所属楼盘ID（冗余，加速查询）',
+    region_id INT NOT NULL COMMENT '所属区域ID（冗余，加速区域筛选）',
+    unit_id INT NULL COMMENT '关联物理单元ID（指向ai_sales_units，精准定位到具体单位）',
+    
+    -- ===== 交易核心数据 =====
+    transaction_date DATE NOT NULL COMMENT '成交/注册日期',
+    price DECIMAL(15,2) NOT NULL COMMENT '成交总价（港元）',
+    saleable_area DECIMAL(10,2) COMMENT '实用面积（平方呎，抓取源若无则为NULL）',
+    has_parking TINYINT(1) DEFAULT 0 COMMENT '是否连车位（0=不含车位，1=含车位，NULL=未知/未采集）',
+    
+    -- ===== 原始抓取字段（保留用于追溯和辅助匹配） =====
+    unit_type_raw VARCHAR(200) NOT NULL COMMENT '抓取的原始户型文本（如 2房2厅 / 开放式）',
+    floor VARCHAR(50) COMMENT '抓取的原始楼层（如 15/F / 高层）',
+    unit_no VARCHAR(50) COMMENT '抓取的原始单位号（如 A室 / 01）',
+    
+    -- ===== 数据来源与原始备份 =====
+    data_source_id INT NOT NULL COMMENT '数据来源ID',
+    external_id VARCHAR(100) COMMENT '外部网站唯一记录ID（用于防重）',
+    source_url VARCHAR(500) COMMENT '该条记录的详情页URL',
+    raw_data JSON COMMENT '抓取的原始数据备份（JSON格式，便于排障）',
+    
+    -- ===== 人工治理标记（直接覆盖，无权重体系） =====
+    is_manual_modified TINYINT(1) NOT NULL DEFAULT 0 COMMENT '是否人工修改过（1=是，价格/面积/关联关系等字段被覆盖）',
+    modified_by_user_id INT NULL COMMENT '最后修改的管理员ID（关联users表）',
+    modified_at TIMESTAMP NULL COMMENT '最后人工修改时间',
+    
+    -- ===== 数据合并与归档（PRD 4.4） =====
+    merged_into_id INT NULL COMMENT '若不为空，表示该记录已被合并到目标ID（指向本表）',
+    is_archived TINYINT(1) NOT NULL DEFAULT 0 COMMENT '逻辑归档（1=已归档，查询默认过滤）',
+    
+    -- ===== 系统时间戳 =====
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP COMMENT '首次入库时间',
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '最后更新时间（含系统自动更新）',
+    
+    -- ===== 索引设计（覆盖核心查询场景） =====
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_source_external (data_source_id, external_id) COMMENT '防止重复抓取',
+    INDEX idx_region_date (region_id, transaction_date) COMMENT '按区域+时间聚合（S1场景）',
+    INDEX idx_project_date (project_id, transaction_date) COMMENT '按楼盘+时间聚合（报告生成）',
+    INDEX idx_unit (unit_id) COMMENT '按物理单元筛选（查询某套单位历史交易）',
+    INDEX idx_date (transaction_date) COMMENT '纯时间范围查询',
+    INDEX idx_archived (is_archived) COMMENT '归档过滤',
+    
+    -- ===== 外键约束 =====
+    FOREIGN KEY (project_id) REFERENCES ai_sales_projects(id),
+    FOREIGN KEY (region_id) REFERENCES ai_sales_regions(id),
+    FOREIGN KEY (unit_type_id) REFERENCES ai_sales_unit_types(id) ON DELETE SET NULL,
+    FOREIGN KEY (unit_id) REFERENCES ai_sales_units(id) ON DELETE SET NULL,
+    FOREIGN KEY (data_source_id) REFERENCES ai_sales_data_sources(id),
+    FOREIGN KEY (merged_into_id) REFERENCES ai_sales_transactions(id) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='销售/成交记录明细表（关联物理单元与户型分类）';
+
+
+ai_sales_units（物理单元表）
+CREATE TABLE ai_sales_units (
+    id INT PRIMARY KEY AUTO_INCREMENT COMMENT '主键',
+    
+    -- ===== 关联维度 =====
+    project_id INT NOT NULL COMMENT '所属楼盘ID',
+    unit_type_id INT NULL COMMENT '关联户型分类ID（由系统映射或人工绑定）',
+    region_id INT NOT NULL COMMENT '冗余区域ID（加速查询）',
+    
+    -- ===== 物理定位（唯一标识一个单元） =====
+    block VARCHAR(50) COMMENT '座数/幢号，如 A座 / 第1座 / Tower 1',
+    floor_no VARCHAR(20) COMMENT '楼层编号，如 15 / G / 3B',
+    unit_no VARCHAR(20) NOT NULL COMMENT '单位号，如 A室 / 01 / 1501',
+    
+    -- 组合后的完整单元名称（用于展示，如 "A座15楼A室"）
+    full_unit_name VARCHAR(200) GENERATED ALWAYS AS (
+        CONCAT_WS(' ', block, 
+                  CASE WHEN floor_no REGEXP '^[0-9]+$' THEN CONCAT(floor_no, '楼') ELSE floor_no END, 
+                  unit_no)
+    ) VIRTUAL COMMENT '完整单元名称（生成列，仅用于展示）',
+    
+    -- ===== 单元固定属性（不随交易变化） =====
+    saleable_area DECIMAL(10,2) COMMENT '实用面积（平方呎）',
+    gross_area DECIMAL(10,2) COMMENT '建筑面积（平方呎，如有）',
+    orientation VARCHAR(50) COMMENT '朝向，如 东南 / 西北',
+    view_desc VARCHAR(100) COMMENT '景观描述，如 海景 / 园景 / 山景',
+    
+    -- ===== 销售状态（实时追踪） =====
+    brochure_id INT NULL COMMENT '关联销售安排ID（指向ai_sales_salesbrochures，该单位所属推售批次）', 
+    is_sold TINYINT(1) NOT NULL DEFAULT 0 COMMENT '是否已售（1=是，0=未售）',
+    first_hand_sold_date DATE COMMENT '一手成交日期，不变',
+    sold_date DATE COMMENT '最近一次成交日期（由最新交易自动更新）',
+    latest_transaction_id INT NULL COMMENT '最近一次交易记录ID（冗余，加速查询）',
+    
+    -- ===== 来源溯源 =====
+    data_source_id INT NOT NULL COMMENT '数据来源ID',
+    external_id VARCHAR(100) COMMENT '外部系统单元ID',
+    source_url VARCHAR(500) COMMENT '来源URL',
+    raw_data JSON COMMENT '抓取的原始数据备份',
+    
+    -- ===== 人工治理标记 =====
+    is_manual_modified TINYINT(1) NOT NULL DEFAULT 0 COMMENT '是否人工修正过',
+    modified_by_user_id INT NULL COMMENT '最后修改的管理员ID',
+    modified_at TIMESTAMP NULL COMMENT '最后人工修改时间',
+    
+    -- ===== 归档 =====
+    is_archived TINYINT(1) NOT NULL DEFAULT 0 COMMENT '逻辑归档',
+    
+    -- ===== 时间戳 =====
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+    
+    -- ===== 索引与约束 =====
+    -- 同一楼盘下，座+楼层+单位号必须唯一（物理单元唯一性）
+    UNIQUE KEY uk_project_block_floor_unit (project_id, block, floor_no, unit_no),
+    INDEX idx_project (project_id),
+    INDEX idx_unit_type (unit_type_id),
+    INDEX idx_region (region_id),
+    INDEX idx_sold_status (is_sold),
+    INDEX idx_external (data_source_id, external_id),
+    
+    FOREIGN KEY (project_id) REFERENCES ai_sales_projects(id) ON DELETE CASCADE,
+    FOREIGN KEY (unit_type_id) REFERENCES ai_sales_unit_types(id) ON DELETE SET NULL,
+    FOREIGN KEY (region_id) REFERENCES ai_sales_regions(id),
+    FOREIGN KEY (data_source_id) REFERENCES ai_sales_data_sources(id),
+    FOREIGN KEY (latest_transaction_id) REFERENCES ai_sales_transactions(id) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='物理单元主数据表（楼盘内每一套可售单位）';
+
+
+
+价单头信息表 ai_sales_price_lists
+CREATE TABLE ai_sales_price_lists (
+    id INT PRIMARY KEY AUTO_INCREMENT COMMENT '主键',
+    
+    -- ===== 关联维度 =====
+    project_id INT NOT NULL COMMENT '所属楼盘ID',
+    brochure_id INT NULL COMMENT '关联销售安排ID（价单通常属于某份销售安排）',
+    
+    -- ===== 价单标识 =====
+    price_list_no VARCHAR(50) NOT NULL COMMENT '价单编号，如 "第1号"',
+    revision_no VARCHAR(20) COMMENT '修订版本号，如 "1.1"',
+    is_latest TINYINT(1) DEFAULT 1 COMMENT '是否最新版本（1=是，0=历史版本）',
+    
+    -- ===== 日期信息 =====
+    issue_date DATE COMMENT '印发日期',
+    revision_dates VARCHAR(200) COMMENT '修订日期列表，如 "2025-04-25, 2025-06-13"',
+    
+    -- ===== 统计信息 =====
+    total_units INT COMMENT '该价单包含的单位总数（可从明细统计，冗余）',
+    
+    -- ===== 状态 =====
+    status ENUM('draft','published','superseded') DEFAULT 'published' 
+        COMMENT '状态：草稿/已发布/已取代',
+    
+    -- ===== 来源溯源 =====
+    data_source_id INT NOT NULL COMMENT '数据来源ID',
+    external_id VARCHAR(100) COMMENT '外部系统价单ID',
+    source_url VARCHAR(500) COMMENT '来源URL（PDF链接）',
+    raw_data JSON COMMENT '抓取的原始数据备份',
+    
+    -- ===== 人工治理标记 =====
+    is_manual_modified TINYINT(1) NOT NULL DEFAULT 0 COMMENT '是否人工修正过',
+    modified_by_user_id INT NULL COMMENT '最后修改的管理员ID',
+    modified_at TIMESTAMP NULL COMMENT '最后人工修改时间',
+    
+    -- ===== 归档 =====
+    is_archived TINYINT(1) NOT NULL DEFAULT 0 COMMENT '逻辑归档',
+    
+    -- ===== 时间戳 =====
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+    
+    -- ===== 索引与约束 =====
+    UNIQUE KEY uk_project_list_revision (project_id, price_list_no, revision_no),
+    INDEX idx_project (project_id),
+    INDEX idx_brochure (brochure_id),
+    INDEX idx_issue_date (issue_date),
+    INDEX idx_is_latest (is_latest),
+    INDEX idx_status (status),
+    
+    FOREIGN KEY (project_id) REFERENCES ai_sales_projects(id) ON DELETE CASCADE,
+    FOREIGN KEY (brochure_id) REFERENCES ai_sales_salesbrochures(id) ON DELETE SET NULL,
+    FOREIGN KEY (data_source_id) REFERENCES ai_sales_data_sources(id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='价单头信息表（开发商发布的价单文件）';
+
+
+
+ 价单明细项表 ai_sales_price_list_items
+ 
+ CREATE TABLE ai_sales_price_list_items (
+    id INT PRIMARY KEY AUTO_INCREMENT COMMENT '主键',
+    
+    -- ===== 关联价单 =====
+    price_list_id INT NOT NULL COMMENT '所属价单ID',
+    
+    -- ===== 关联物理单元（若已存在） =====
+    unit_id INT NULL COMMENT '关联物理单元ID（如已匹配）',
+    
+    -- ===== 单位定位（冗余，用于匹配和展示） =====
+    block VARCHAR(50) COMMENT '座数/幢号，如 第1A座',
+    floor_no VARCHAR(20) COMMENT '楼层，如 2',
+    unit_no VARCHAR(20) NOT NULL COMMENT '单位号，如 A',
+    
+    -- ===== 价单中提供的面积数据 =====
+    saleable_area_sqm DECIMAL(10,2) COMMENT '实用面积（平方米）',
+    saleable_area_sqft DECIMAL(10,2) COMMENT '实用面积（平方呎，由平方米换算或直接提供）',
+    balcony_area_sqm DECIMAL(10,2) COMMENT '露台面积（平方米）',
+    balcony_area_sqft DECIMAL(10,2) COMMENT '露台面积（平方呎）',
+    utility_platform_area_sqm DECIMAL(10,2) COMMENT '工作平台面积（平方米）',
+    utility_platform_area_sqft DECIMAL(10,2) COMMENT '工作平台面积（平方呎）',
+    other_area_sqm DECIMAL(10,2) COMMENT '其他指明项目面积（平方米）',
+    other_area_sqft DECIMAL(10,2) COMMENT '其他指明项目面积（平方呎）',
+    
+    -- ===== 价格数据 =====
+    price DECIMAL(15,2) NOT NULL COMMENT '售价（港元）',
+    price_per_sqft DECIMAL(15,2) COMMENT '每平方呎售价（由价格/实用面积计算，可冗余存储）',
+    
+    -- ===== 是否连车位（价单中可能标注） =====
+    has_parking TINYINT(1) DEFAULT 0 COMMENT '是否连车位（0=不含，1=含，NULL=未知）',
+    
+    -- ===== 其他备注 =====
+    notes VARCHAR(500) COMMENT '价单中的特殊备注，如 "露台: 2.005 (22)" 等',
+    
+    -- ===== 来源溯源 =====
+    data_source_id INT NOT NULL COMMENT '数据来源ID',
+    external_id VARCHAR(100) COMMENT '外部系统条目ID',
+    
+    -- ===== 人工治理标记 =====
+    is_manual_modified TINYINT(1) NOT NULL DEFAULT 0 COMMENT '是否人工修正过',
+    modified_by_user_id INT NULL COMMENT '最后修改的管理员ID',
+    modified_at TIMESTAMP NULL COMMENT '最后人工修改时间',
+    
+    -- ===== 归档 =====
+    is_archived TINYINT(1) NOT NULL DEFAULT 0 COMMENT '逻辑归档',
+    
+    -- ===== 时间戳 =====
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+    
+    -- ===== 索引与约束 =====
+    -- 同一价单下，座+楼层+单位号唯一（防止重复导入）
+    UNIQUE KEY uk_pricelist_block_floor_unit (price_list_id, block, floor_no, unit_no),
+    INDEX idx_price_list (price_list_id),
+    INDEX idx_unit (unit_id),
+    INDEX idx_block_floor_unit (block, floor_no, unit_no),
+    INDEX idx_external (data_source_id, external_id),
+    
+    FOREIGN KEY (price_list_id) REFERENCES ai_sales_price_lists(id) ON DELETE CASCADE,
+    FOREIGN KEY (unit_id) REFERENCES ai_sales_units(id) ON DELETE SET NULL,
+    FOREIGN KEY (data_source_id) REFERENCES ai_sales_data_sources(id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='价单明细项表（每个单位的价格和面积信息）';
